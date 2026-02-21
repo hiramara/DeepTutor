@@ -24,6 +24,12 @@ profile_generation:
 
 # Knowledge gap generation configuration
 gap_generation:
+  # Use content_list for page-grounded gaps (each gap has source_pages)
+  use_content_list: true
+  # Number of pages to randomly select from content_list
+  pages_per_profile: 10
+  # Batch rejection sampling: verify task + gaps align with source
+  rejection_sampling: true
   # Number of knowledge gaps per profile
   gaps_per_profile: 3
   # Gap type distribution
@@ -37,8 +43,10 @@ gap_generation:
 
 # Task generation configuration
 task_generation:
-  # Number of tasks per (profile + gaps) combination
-  tasks_per_combo: 2
+  # Minimum tasks per profile; keep generating gaps+tasks until达标
+  min_tasks_per_profile: 3
+  # Gaps per batch when generating more to meet min_tasks
+  gaps_per_batch: 3
   # Task types
   task_types:
     - name: "concept_understanding"  # Wants to understand a concept

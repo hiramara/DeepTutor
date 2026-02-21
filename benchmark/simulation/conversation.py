@@ -524,6 +524,7 @@ async def run_multi_session(
                 "entry_id": r["entry_id"],
                 "actual_turns": r["actual_turns"],
                 "transcript": r["transcript"],
+                "entry": r["entry"],
             }
             for r in sessions_results
         ],

@@ -1,5 +1,6 @@
 # Evaluation prompt for a single tutor response (turn-level)
 # Used by benchmark.evaluation.evaluator
+# Merged dimensions: 50% personalization, 25% effectiveness, 25% knowledge_source_alignment
 
 system: |
   You are an expert evaluator for AI tutoring systems. Your task is to score a single tutor response
@@ -9,48 +10,43 @@ system: |
 
   ## Scoring strictness (CRITICAL)
   Be STRICT and critical. Reserve 5 for truly exceptional responses that would stand out in a review.
-  - 5: Exceptional — clear, specific evidence of strong personalization; would be a model example.
-  - 4: Good — solid adaptation, but not exemplary. Minor gaps or generic elements.
+  - 5: Exceptional — clear, specific evidence; would be a model example.
+  - 4: Good — solid adaptation, but not exemplary.
   - 3: Adequate — acceptable but unremarkable. Generic explanations score 3 at most on personalization.
-  - 2: Below average — weak adaptation, missed opportunities, or notable flaws.
-  - 1: Poor — little to no personalization, incorrect, or unresponsive.
-  When in doubt, score lower. A response that could apply to any student (generic) should NOT exceed 3 on personalization dimensions, even if factually correct.
+  - 2: Below average — weak adaptation or notable flaws.
+  - 1: Poor — little personalization, incorrect, or unresponsive.
+  When in doubt, score lower. Generic responses should NOT exceed 3 on personalization dimensions.
 
-  ## Dimensions (personalization-weighted)
+  ## Dimensions
 
-  **Personalization (60% of turn score):**
-  - knowledge_state_adaptation (1-5): Does the tutor avoid over-explaining what the student already knows,
-    scaffold appropriately for partially_known topics, and introduce unknown concepts carefully?
-  - learning_style_adaptation (1-5): Does the tutor match the student's learning preferences from personality
-    (e.g., concrete examples, visual aids, step-by-step, analogies)?
+  **Personalization (50% of turn score):**
+  - profile_adaptation (1-5): Does the tutor adapt to the student's knowledge state (avoid over-explaining known,
+    scaffold partially_known, introduce unknown carefully), match learning style (examples, visuals, step-by-step),
+    match communication style (tone, pacing), and provide appropriate scaffolding (direct vs Socratic)?
   - misconception_targeting (1-5): Does the tutor address the student's specific misconceptions (beliefs/gaps)
     rather than giving generic corrections?
-  - communication_style_match (1-5): Does tone and pacing match the student's personality (e.g., patient with
-    anxious students, rigorous with analytical ones)?
-  - scaffolding_appropriateness (1-5): Is the level of support (direct explanation vs Socratic) appropriate
-    for the student's current understanding?
 
-  **Effectiveness (40% of turn score):**
-  - correctness (1-5): Is the content factually correct?
-  - responsiveness (1-5): Does the tutor directly address the student's question/concern?
-  - clarity (1-5): Is the explanation clear and well-structured?
+  **Effectiveness (25% of turn score):**
+  - response_quality (1-5): Is the content factually correct? Does it directly address the student's question?
+    Is the explanation clear and well-structured?
   - engagement (1-5): Does the tutor encourage participation, ask check-in questions, or invite follow-up?
+
+  **Knowledge source alignment (25% of turn score, when source provided):**
+  - knowledge_source_alignment (1-5): Does the tutor's explanation align with the knowledge base source?
+    No hallucination, no contradiction. Faithful to the textbook material. **When "Not applicable"**: Omit this key.
 
   Output valid JSON only, no markdown or extra text:
   {
     "scores": {
-      "knowledge_state_adaptation": <1-5>,
-      "learning_style_adaptation": <1-5>,
+      "profile_adaptation": <1-5>,
       "misconception_targeting": <1-5>,
-      "communication_style_match": <1-5>,
-      "scaffolding_appropriateness": <1-5>,
-      "correctness": <1-5>,
-      "responsiveness": <1-5>,
-      "clarity": <1-5>,
-      "engagement": <1-5>
+      "response_quality": <1-5>,
+      "engagement": <1-5>,
+      "knowledge_source_alignment": <1-5>
     },
     "rationale": "<2-4 sentences explaining key strengths and weaknesses>"
   }
+  Include knowledge_source_alignment only when source content is provided.
 
 user_template: |
   ## Student Profile
@@ -62,6 +58,9 @@ user_template: |
   ## Task
   {task_summary}
 
+  ## Source Content (knowledge base — tutor should align with this)
+  {source_content_summary}
+
   ## Conversation so far (up to this turn)
   {conversation_context}
 
@@ -72,4 +71,4 @@ user_template: |
   {tutor_response}
 
   ## Your task
-  Score the tutor's response on all 9 dimensions (1-5). Be strict: only award 4 or 5 when there is clear, specific evidence. Output JSON only.
+  Score the tutor's response on all dimensions (1-5). Include knowledge_source_alignment when source content is provided. Be strict: only award 4 or 5 when there is clear, specific evidence. Output JSON only.

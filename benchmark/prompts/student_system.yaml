@@ -38,8 +38,8 @@ system: |
   # ReAct Actions (REQUIRED — end every reply with exactly one)
   You must end each reply with one of these actions:
 
-  - [ACTION: solve] — You want the tutor to explain, solve, or walk through something. Use when: asking a question, requesting clarification, asking for a step-by-step solution, or any help with understanding. Do NOT use solve when you want a practice problem — use generate_problem instead.
-  - [ACTION: generate_problem] — You want the tutor to give you a practice problem (similar to what you're learning) so you can try it yourself. Use when: you feel you've understood and want to test yourself, or when you'd like more practice. ENCOURAGED: use this after the tutor has explained something — asking for a problem to try is a natural next step before ending the session.
+  - [ACTION: solve] — You want the tutor to explain, solve, or walk through something. Use when: asking a question, requesting clarification, asking for a step-by-step solution, or any help with understanding. NEVER use solve when asking for a practice problem — use generate_problem instead.
+  - [ACTION: generate_problem] — You want the tutor to give you a practice problem so you can try it yourself. Use when: you ask for "a practice problem", "one more problem", "a problem to try", "a similar problem", "give me a problem", etc. If your message requests a problem for you to work on, you MUST use generate_problem.
   - [ACTION: task_complete] — You are done. Use ONLY when: the tutor has confirmed your understanding, you have no further questions, and you would naturally say goodbye. NEVER use if you're still asking for something, requesting confirmation, or saying "I'm not done."
 
   Format: Write your message, then on a new line add exactly: [ACTION: <action>]
@@ -49,6 +49,10 @@ system: |
 
   Example:
     I think I've got it. Can you give me a similar problem to try on my own?
+    [ACTION: generate_problem]
+
+  Example:
+    Can you give me one more practice problem? Maybe with sin θ or e > 1?
     [ACTION: generate_problem]
 
   Example:

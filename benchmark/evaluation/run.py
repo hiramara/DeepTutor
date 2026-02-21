@@ -2,9 +2,14 @@
 """
 CLI for running benchmark evaluation on transcript files.
 
+Supports single-session and multi-session transcripts (from run_multi_session).
+
 Usage:
   # Evaluate a single transcript (turn-level + dialog-level):
   python -m benchmark.evaluation.run --transcript benchmark/data/transcripts/xxx.json
+
+  # Evaluate multi-session transcript (each session scored, then averaged):
+  python -m benchmark.evaluation.run --transcript multi_calc1_beginner_00_xxx.json
 
   # Dialog-only (faster, skip per-turn scoring):
   python -m benchmark.evaluation.run --transcript xxx.json --dialog-only
@@ -20,11 +25,15 @@ import argparse
 import asyncio
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from benchmark.evaluation.evaluator import evaluate_transcript
 
 logger = logging.getLogger("benchmark.evaluation")
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DEFAULT_EVAL_DIR = PROJECT_ROOT / "benchmark" / "data" / "evaluations"
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -64,7 +73,7 @@ async def main() -> None:
     parser.add_argument(
         "--output",
         "-o",
-        help="Output path for evaluation results JSON",
+        help="Output path for results JSON (default: benchmark/data/evaluations/<stem>_eval_<timestamp>.json)",
     )
     parser.add_argument(
         "--temperature",
@@ -92,12 +101,21 @@ async def main() -> None:
     if args.transcript:
         p = Path(args.transcript)
         if not p.exists():
-            parser.error(f"Transcript not found: {p}")
+            # Try relative to project root (handles /benchmark/... typo)
+            alt = PROJECT_ROOT / args.transcript.lstrip("/")
+            if alt.exists():
+                p = alt
+            else:
+                parser.error(f"Transcript not found: {p}")
         paths = [p]
     else:
         d = Path(args.transcript_dir)
         if not d.is_dir():
-            parser.error(f"Directory not found: {d}")
+            alt = PROJECT_ROOT / args.transcript_dir.lstrip("/")
+            if alt.is_dir():
+                d = alt
+            else:
+                parser.error(f"Directory not found: {d}")
         paths = sorted(d.glob("*.json"))
 
     if not paths:
@@ -116,17 +134,28 @@ async def main() -> None:
 
             # Print summary
             print(f"\n--- {path.name} ---")
-            print(f"Entry: {result.get('entry_id', '?')}")
-            print(f"Turns: {result.get('actual_turns', 0)}")
-            print(f"Dialog overall: {result.get('overall_dialog_score', 0):.2f}")
-            print(f"Dialog personalization: {result.get('personalization_dialog_score', 0):.2f}")
-            if result.get("turn_scores"):
-                print(f"Turn avg overall: {result.get('turn_avg_overall', 0):.2f}")
-                print(f"Turn avg personalization: {result.get('turn_avg_personalization', 0):.2f}")
-            print(f"Combined overall (turn 40% + dialog 60%): {result.get('combined_overall_score', 0):.2f}")
-            print(f"Combined personalization: {result.get('combined_personalization_score', 0):.2f}")
-            if result.get("summary"):
-                print(f"Summary: {result['summary'][:200]}...")
+            if "error" in result:
+                print(f"Error: {result['error']}")
+            elif "sessions" in result:
+                print(f"Profile: {result.get('profile_id', '?')} ({result.get('num_sessions', 0)} sessions)")
+                for i, s in enumerate(result.get("sessions", []), 1):
+                    print(f"  Session {i} ({s.get('entry_id', '?')}): turns={s.get('actual_turns', 0)}, "
+                          f"combined={s.get('combined_overall_score', 0):.2f}")
+                print(f"Turns: {result.get('actual_turns', 0)}")
+                print(f"Combined overall (avg): {result.get('combined_overall_score', 0):.2f}")
+                print(f"Combined personalization (avg): {result.get('combined_personalization_score', 0):.2f}")
+            else:
+                print(f"Entry: {result.get('entry_id', '?')}")
+                print(f"Turns: {result.get('actual_turns', 0)}")
+                print(f"Dialog overall: {result.get('overall_dialog_score', 0):.2f}")
+                print(f"Dialog personalization: {result.get('personalization_dialog_score', 0):.2f}")
+                if result.get("turn_scores"):
+                    print(f"Turn avg overall: {result.get('turn_avg_overall', 0):.2f}")
+                    print(f"Turn avg personalization: {result.get('turn_avg_personalization', 0):.2f}")
+                print(f"Combined overall (turn 40% + dialog 60%): {result.get('combined_overall_score', 0):.2f}")
+                print(f"Combined personalization: {result.get('combined_personalization_score', 0):.2f}")
+                if result.get("summary"):
+                    print(f"Summary: {result['summary'][:200]}...")
         except Exception as e:
             logger.exception("Failed to evaluate %s", path)
             results.append({"transcript_path": str(path), "error": str(e)})
@@ -134,15 +163,22 @@ async def main() -> None:
     # Single file: result is the first (and only) item
     output_data = results[0] if len(results) == 1 else {"evaluations": results}
 
+    # Always save to file; default path when --output not specified
     if args.output:
         out_path = Path(args.output)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
-        print(f"\nResults saved → {out_path}")
     else:
-        print("\n--- Full result (use -o to save) ---")
-        print(json.dumps(output_data, ensure_ascii=False, indent=2))
+        DEFAULT_EVAL_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if len(paths) == 1:
+            stem = paths[0].stem
+            out_path = DEFAULT_EVAL_DIR / f"{stem}_eval_{timestamp}.json"
+        else:
+            out_path = DEFAULT_EVAL_DIR / f"eval_{timestamp}.json"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(output_data, f, ensure_ascii=False, indent=2)
+    print(f"\nResults saved → {out_path}")
 
 
 if __name__ == "__main__":

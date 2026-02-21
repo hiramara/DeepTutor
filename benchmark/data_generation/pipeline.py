@@ -33,10 +33,19 @@ from pathlib import Path
 
 import yaml
 
-from benchmark.data_generation.gap_generator import generate_gaps_for_profiles
+from benchmark.data_generation.content_loader import load_page_content_for_profile
+from benchmark.data_generation.gap_generator import (
+    generate_gaps,
+    generate_gaps_for_profiles,
+    generate_gaps_for_profiles_with_pages,
+    generate_gaps_from_pages,
+)
 from benchmark.data_generation.profile_generator import generate_profiles_for_kb
 from benchmark.data_generation.scope_generator import generate_knowledge_scope
-from benchmark.data_generation.task_generator import generate_tasks_with_partition
+from benchmark.data_generation.task_generator import (
+    generate_tasks_with_partition,
+    generate_tasks_with_partition_and_rejection,
+)
 
 logger = logging.getLogger("benchmark.pipeline")
 
@@ -202,59 +211,122 @@ class DataGenerationPipeline:
         )
         self.profiles[kb_name] = profiles
 
-        # Stage 4: Generate gaps
-        logger.info(f"[Stage 4] Generating knowledge gaps for '{kb_name}'...")
+        # Stage 4 & 5: Generate gaps + tasks per profile, loop until min_tasks达标
         gap_cfg = self.config.get("gap_generation", {})
+        task_cfg = self.config.get("task_generation", {})
+        logger.info(f"[Stage 4-5] Generating gaps and tasks for '{kb_name}' (min {task_cfg.get('min_tasks_per_profile', 3)} tasks/profile)...")
+        min_tasks = task_cfg.get("min_tasks_per_profile", 3)
+        gaps_per_batch = task_cfg.get("gaps_per_batch", 3)
         severity_weights = {}
         for level in gap_cfg.get("severity_levels", []):
             severity_weights[level["name"]] = level["weight"]
 
-        profile_gaps = await generate_gaps_for_profiles(
-            knowledge_scope=scope,
-            profiles=profiles,
-            gaps_per_profile=gap_cfg.get("gaps_per_profile", 3),
-            severity_weights=severity_weights or None,
-        )
-        self.gaps[kb_name] = profile_gaps
+        use_content_list = gap_cfg.get("use_content_list", False)
+        rejection_sampling = use_content_list and gap_cfg.get("rejection_sampling", False)
+        page_content_by_profile: dict[str, tuple[dict[int, str], list[int]]] = {}
 
-        # Stage 5: Generate tasks per profile (each gap → exactly one task)
-        logger.info(f"[Stage 5] Generating tasks for '{kb_name}' (partition: each gap in one task)...")
+        if use_content_list:
+            num_pages = gap_cfg.get("pages_per_profile", 10)
+            for profile in profiles:
+                profile_id = profile.get("profile_id", "unknown")
+                result = load_page_content_for_profile(
+                    kb_base_dir=self.kb_base_dir,
+                    kb_name=kb_name,
+                    num_pages=num_pages,
+                    profile_id=profile_id,
+                )
+                if result:
+                    page_content_by_profile[profile_id] = result
+            if not page_content_by_profile:
+                logger.warning("  No content_list found, falling back to scope-based gaps")
+                use_content_list = False
+
+        profile_gaps: dict[str, list[dict]] = {p.get("profile_id", "?"): [] for p in profiles}
 
         for profile in profiles:
             profile_id = profile.get("profile_id", "unknown")
-            gaps = profile_gaps.get(profile_id, [])
+            page_content, _ = page_content_by_profile.get(profile_id, (None, []))
+            all_gaps: list[dict] = []
+            all_tasks: list[dict] = []
+            task_index_offset = 0
 
-            if not gaps:
-                logger.warning(f"No gaps for profile {profile_id}, skipping tasks")
-                continue
+            max_batches = 10
+            batch_num = 0
+            while len(all_tasks) < min_tasks and batch_num < max_batches:
+                batch_num += 1
+                batch_size = gaps_per_batch
+                try:
+                    if use_content_list and page_content:
+                        new_gaps = await generate_gaps_from_pages(
+                            page_content=page_content,
+                            student_profile=profile,
+                            num_gaps=batch_size,
+                            severity_weights=severity_weights or None,
+                            gap_id_offset=len(all_gaps),
+                        )
+                    else:
+                        new_gaps = await generate_gaps(
+                            knowledge_scope=scope,
+                            student_profile=profile,
+                            num_gaps=batch_size,
+                            severity_weights=severity_weights or None,
+                            gap_id_offset=len(all_gaps),
+                        )
 
-            try:
-                tasks = await generate_tasks_with_partition(
-                    knowledge_scope=scope,
-                    student_profile=profile,
-                    knowledge_gaps=gaps,
-                )
+                    if not new_gaps:
+                        logger.warning(f"  No new gaps for {profile_id}, stopping")
+                        break
 
-                # Build gap lookup for resolving target_gaps
-                gap_by_id = {g["gap_id"]: g for g in gaps if "gap_id" in g}
+                    all_gaps.extend(new_gaps)
 
-                for task in tasks:
-                    task_id = task.get("task_id", "unknown")
-                    # Resolve target_gaps from IDs to full gap objects
-                    target_gap_ids = task.get("target_gaps", [])
-                    target_gaps = [gap_by_id[gid] for gid in target_gap_ids if gid in gap_by_id]
+                    if rejection_sampling and page_content:
+                        tasks = await generate_tasks_with_partition_and_rejection(
+                            knowledge_scope=scope,
+                            student_profile=profile,
+                            knowledge_gaps=new_gaps,
+                            page_content=page_content,
+                            task_index_offset=task_index_offset,
+                        )
+                    else:
+                        tasks = await generate_tasks_with_partition(
+                            knowledge_scope=scope,
+                            student_profile=profile,
+                            knowledge_gaps=new_gaps,
+                            task_index_offset=task_index_offset,
+                        )
 
-                    entry = {
-                        "entry_id": f"{kb_name}_{profile_id}_{task_id}",
-                        "kb_name": kb_name,
-                        "profile": profile,
-                        "gaps": target_gaps,
-                        "task": task,
-                    }
-                    self.benchmark_entries.append(entry)
+                    all_tasks.extend(tasks)
+                    task_index_offset += len(tasks)
 
-            except Exception as e:
-                logger.error(f"Failed to generate tasks for {profile_id}: {e}")
+                    if len(all_tasks) >= min_tasks:
+                        logger.info(f"  {profile_id}: {len(all_tasks)} tasks (达标)")
+                        break
+                    logger.info(f"  {profile_id}: {len(all_tasks)}/{min_tasks} tasks, generating more gaps...")
+
+                except Exception as e:
+                    logger.error(f"Failed for {profile_id}: {e}")
+                    break
+
+            profile_gaps[profile_id] = all_gaps
+            gap_by_id = {g["gap_id"]: g for g in all_gaps if "gap_id" in g}
+
+            for task in all_tasks:
+                task_id = task.get("task_id", "unknown")
+                target_gap_ids = task.get("target_gaps", [])
+                target_gaps = [gap_by_id[gid] for gid in target_gap_ids if gid in gap_by_id]
+
+                entry = {
+                    "entry_id": f"{kb_name}_{profile_id}_{task_id}",
+                    "kb_name": kb_name,
+                    "profile": profile,
+                    "gaps": target_gaps,
+                    "task": task,
+                }
+                if page_content is not None:
+                    entry["source_content"] = page_content
+                self.benchmark_entries.append(entry)
+
+        self.gaps[kb_name] = profile_gaps
 
         # Save intermediate per-KB result (includes scope for debugging)
         if self.config["output"].get("save_intermediate", True):
@@ -284,9 +356,25 @@ class DataGenerationPipeline:
         entries_dir = self.output_dir / f"benchmark_{timestamp}"
         entries_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save each entry as a separate, human-readable JSON file
+        # Save each entry as a separate, human-readable JSON file.
+        # Guard against duplicated entry_id to avoid silent overwrite.
+        seen_entry_ids: dict[str, int] = {}
         for entry in self.benchmark_entries:
-            entry_id = entry.get("entry_id", "unknown")
+            base_entry_id = str(entry.get("entry_id", "unknown"))
+            dup_count = seen_entry_ids.get(base_entry_id, 0)
+            seen_entry_ids[base_entry_id] = dup_count + 1
+
+            if dup_count == 0:
+                entry_id = base_entry_id
+            else:
+                entry_id = f"{base_entry_id}__dup{dup_count + 1:02d}"
+                logger.warning(
+                    "Duplicate entry_id detected: %s -> renamed to %s",
+                    base_entry_id,
+                    entry_id,
+                )
+                entry["entry_id"] = entry_id
+
             entry_file = entries_dir / f"{entry_id}.json"
             with open(entry_file, "w", encoding="utf-8") as f:
                 json.dump(entry, f, ensure_ascii=False, indent=2)

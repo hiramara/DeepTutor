@@ -18,6 +18,18 @@ from benchmark.data_generation.llm_utils import call_llm_json, load_prompt, rend
 logger = logging.getLogger("benchmark.task_generator")
 
 
+def _normalize_task_id(task: dict, task_index: int) -> str:
+    """
+    Build a deterministic task_id from generation index.
+
+    We preserve a simple prefix signal from model output (e.g. task_reflect),
+    but always rewrite the numeric suffix so IDs are unique within a profile.
+    """
+    raw_id = str(task.get("task_id", "") or "")
+    prefix = "task_reflect" if raw_id.startswith("task_reflect") else "task"
+    return f"{prefix}_{task_index + 1:03d}"
+
+
 async def generate_tasks(
     knowledge_scope: dict,
     student_profile: dict,
@@ -72,8 +84,7 @@ async def generate_tasks(
     # Ensure task IDs and validate target_gaps
     gap_ids = {g.get("gap_id") for g in knowledge_gaps}
     for i, task in enumerate(tasks):
-        if "task_id" not in task:
-            task["task_id"] = f"task_{profile_id}_{i:02d}"
+        task["task_id"] = _normalize_task_id(task, i)
 
         # Ensure target_gaps is a list of valid gap_ids
         target = task.get("target_gaps", [])
@@ -139,8 +150,7 @@ async def generate_single_task(
     )
 
     task = result if isinstance(result, dict) else {}
-    if "task_id" not in task:
-        task["task_id"] = f"task_{profile_id}_{task_index:02d}"
+    task["task_id"] = _normalize_task_id(task, task_index)
 
     target = task.get("target_gaps", [])
     if isinstance(target, str):
@@ -159,6 +169,7 @@ async def generate_tasks_with_partition(
     knowledge_scope: dict,
     student_profile: dict,
     knowledge_gaps: list[dict],
+    task_index_offset: int = 0,
 ) -> list[dict]:
     """
     Generate tasks by iteratively partitioning gaps. Each gap is assigned to
@@ -169,13 +180,14 @@ async def generate_tasks_with_partition(
         knowledge_scope: Knowledge scope dictionary
         student_profile: Student profile dictionary
         knowledge_gaps: All knowledge gaps for this profile
+        task_index_offset: Offset for task_id (e.g. when generating multiple batches)
 
     Returns:
         List of task dicts; union of target_gaps equals all gap_ids, no overlap
     """
     tasks: list[dict] = []
     remaining = list(knowledge_gaps)
-    task_index = 0
+    task_index = task_index_offset
 
     while remaining:
         task = await generate_single_task(
@@ -194,3 +206,164 @@ async def generate_tasks_with_partition(
 
     logger.info(f"  Partition complete: {len(tasks)} tasks, all gaps assigned")
     return tasks
+
+
+def _format_source_for_rejection(page_content: dict[int, str], page_indices: list[int]) -> str:
+    """Format source content for rejection sampling (only relevant pages)."""
+    lines = []
+    for p in sorted(set(page_indices) & set(page_content.keys())):
+        text = page_content.get(p, "")
+        if text:
+            lines.append(f"### Page {p}\n{text[:2500]}{'...' if len(text) > 2500 else ''}")
+    return "\n\n".join(lines) if lines else "(no content)"
+
+
+async def batch_rejection_sample_tasks(
+    tasks: list[dict],
+    gap_by_id: dict[str, dict],
+    page_content: dict[int, str],
+) -> tuple[list[dict], list[dict]]:
+    """
+    Batch rejection sampling: verify each task + gaps align with source content.
+
+    Args:
+        tasks: List of task dicts with target_gaps
+        gap_by_id: Mapping gap_id -> gap dict
+        page_content: page_idx -> text
+
+    Returns:
+        (accepted_tasks, rejected_tasks)
+    """
+    if not tasks or not page_content:
+        return tasks
+
+    # Collect all source pages used by any task
+    all_page_indices = []
+    for task in tasks:
+        for gid in task.get("target_gaps", []):
+            gap = gap_by_id.get(gid, {})
+            all_page_indices.extend(gap.get("source_pages", []))
+
+    source_text = _format_source_for_rejection(page_content, all_page_indices)
+
+    # Build tasks_with_gaps: each task + its full gap objects
+    tasks_with_gaps_list = []
+    for task in tasks:
+        target_gaps = [
+            gap_by_id.get(gid, {"gap_id": gid})
+            for gid in task.get("target_gaps", [])
+            if gid in gap_by_id
+        ]
+        tasks_with_gaps_list.append({
+            "task": task,
+            "gaps": target_gaps,
+        })
+
+    tasks_text = json.dumps(tasks_with_gaps_list, ensure_ascii=False, indent=2)
+
+    prompt = load_prompt("reject_task_batch")
+    user_prompt = prompt["user_template"].format(
+        source_content=source_text,
+        tasks_with_gaps=tasks_text,
+    )
+
+    try:
+        result = await call_llm_json(
+            user_prompt=user_prompt,
+            system_prompt=prompt["system"],
+            temperature=0.1,
+            max_tokens=2048,
+        )
+    except Exception as e:
+        logger.warning(f"Rejection sampling failed: {e}, accepting all tasks")
+        return tasks, []
+
+    results = result.get("results", [])
+    if not isinstance(results, list):
+        logger.warning("Rejection result malformed, accepting all tasks")
+        return tasks, []
+
+    accepted_ids = {r["task_id"] for r in results if r.get("accepted") is True}
+    accepted = [t for t in tasks if t.get("task_id") in accepted_ids]
+    rejected = [t for t in tasks if t.get("task_id") not in accepted_ids]
+    if rejected:
+        for r in results:
+            if not r.get("accepted"):
+                logger.info(f"  Rejected task {r.get('task_id')}: {r.get('reason', '?')}")
+
+    return accepted, rejected
+
+
+async def generate_tasks_with_partition_and_rejection(
+    knowledge_scope: dict,
+    student_profile: dict,
+    knowledge_gaps: list[dict],
+    page_content: dict[int, str],
+    max_retries: int = 2,
+    task_index_offset: int = 0,
+) -> list[dict]:
+    """
+    Generate tasks with partition, then batch rejection sampling with retry.
+
+    Flow: 10 pages → gaps → tasks (partition). For each task, verify alignment with source.
+    Rejected tasks are regenerated (same gaps, new task) and re-checked.
+
+    Args:
+        knowledge_scope: Knowledge scope
+        student_profile: Student profile
+        knowledge_gaps: All gaps (with source_pages)
+        page_content: page_idx -> text for rejection check
+        max_retries: Max regeneration attempts for rejected tasks
+
+    Returns:
+        List of accepted tasks only
+    """
+    tasks = await generate_tasks_with_partition(
+        knowledge_scope=knowledge_scope,
+        student_profile=student_profile,
+        knowledge_gaps=knowledge_gaps,
+        task_index_offset=task_index_offset,
+    )
+    gap_by_id = {g["gap_id"]: g for g in knowledge_gaps if "gap_id" in g}
+
+    if not page_content:
+        return tasks
+
+    all_accepted = []
+    to_process = list(tasks)
+    retry_count = 0
+
+    while to_process and retry_count <= max_retries:
+        accepted, rejected = await batch_rejection_sample_tasks(
+            tasks=to_process,
+            gap_by_id=gap_by_id,
+            page_content=page_content,
+        )
+        all_accepted.extend(accepted)
+
+        if not rejected:
+            break
+
+        logger.info(f"  Regenerating {len(rejected)} rejected tasks (retry {retry_count + 1})")
+        to_process = []
+        for old_task in rejected:
+            gap_ids = old_task.get("target_gaps", [])
+            remaining = [gap_by_id[gid] for gid in gap_ids if gid in gap_by_id]
+            if not remaining:
+                continue
+            new_task = await generate_single_task(
+                knowledge_scope=knowledge_scope,
+                student_profile=student_profile,
+                available_gaps=remaining,
+                task_index=task_index_offset + len(all_accepted) + len(to_process),
+            )
+            if new_task:
+                to_process.append(new_task)
+
+        retry_count += 1
+
+    if to_process and retry_count > max_retries:
+        logger.warning(f"  {len(to_process)} tasks still rejected after {max_retries} retries, accepting them")
+        all_accepted.extend(to_process)
+
+    return all_accepted

@@ -1,55 +1,55 @@
 # Evaluation prompt for the entire tutoring dialog
 # Used by benchmark.evaluation.evaluator
+# Merged dimensions: 50% personalization, 25% quality, 25% knowledge_source_alignment
 
 system: |
   You are an expert evaluator for AI tutoring systems. Your task is to score an ENTIRE tutoring
-  conversation. The student has a specific profile (knowledge state, learning style, misconceptions)
-  and the tutor should adapt throughout. Focus on PERSONALIZATION: did the tutor consistently
-  tailor the session to THIS student, or give generic explanations?
+  conversation. The student has a specific profile and the tutor should adapt throughout.
+  Focus on PERSONALIZATION: did the tutor consistently tailor the session to THIS student?
 
   ## Scoring strictness (CRITICAL)
-  Be STRICT and critical. Reserve 5 for truly exceptional dialogs that would stand out in a review.
-  - 5: Exceptional — consistent, demonstrable personalization throughout; clear gap resolution; model session.
-  - 4: Good — solid overall, but not exemplary. Some generic stretches or missed opportunities.
-  - 3: Adequate — acceptable but unremarkable. Mostly generic tutoring scores 3 at most on personalization.
-  - 2: Below average — weak adaptation, gaps left unaddressed, or notable flaws.
-  - 1: Poor — little personalization, gaps ignored, or session failed to meet task goals.
-  When in doubt, score lower. A dialog that could have been with any student (generic) should NOT exceed 3 on personalization dimensions.
+  Be STRICT and critical. Reserve 5 for truly exceptional dialogs.
+  - 5: Exceptional — consistent personalization; clear gap resolution; model session.
+  - 4: Good — solid overall, but not exemplary.
+  - 3: Adequate — acceptable but unremarkable. Mostly generic tutoring scores 3 at most.
+  - 2: Below average — weak adaptation or notable flaws.
+  - 1: Poor — little personalization, gaps ignored, or session failed.
+  When in doubt, score lower. Generic dialogs should NOT exceed 3 on personalization dimensions.
 
-  ## Dimensions (personalization-weighted)
+  ## Dimensions
 
-  **Personalization (60% of dialog score):**
-  - personalization_consistency (1-5): Did the tutor maintain adaptation to the student's profile
-    throughout the conversation, or only at the start?
-  - gap_coverage (1-5): Were all target knowledge gaps (from task.target_gaps) identified and
-    addressed during the conversation?
-  - misconception_resolution_trajectory (1-5): Did the tutor follow a sensible trajectory for
-    exposing and correcting misconceptions (as described in expected_gap_exposure)?
-  - success_criteria_met (1-5): To what extent were the task's success_criteria achieved by the
-    end of the conversation?
-  - learning_path_adaptation (1-5): Did the tutor adjust pacing and depth based on student
-    reactions (e.g., slow down when confused, advance when ready)?
+  **Personalization (50% of dialog score):**
+  - adaptation_consistency (1-5): Did the tutor maintain adaptation to the student's profile
+    throughout (not just at the start)? Did they adjust pacing and depth based on student
+    reactions (slow down when confused, advance when ready)?
+  - gap_resolution (1-5): Were all target gaps identified and addressed? Did the tutor follow
+    a sensible trajectory for exposing and correcting misconceptions (as in expected_gap_exposure)?
+  - success_criteria_met (1-5): To what extent were the task's success_criteria achieved by the end?
 
-  **Overall quality (40% of dialog score):**
-  - efficiency (1-5): Was the conversation appropriately efficient—not overly long or rushed?
-  - coherence (1-5): Was the conversation coherent and focused on the task?
+  **Session quality (25% of dialog score):**
+  - session_quality (1-5): Was the conversation appropriately efficient (not overly long or rushed)?
+    Was it coherent and focused on the task?
   - student_agency (1-5): Did the tutor give the student space to think, ask, and try—rather than
     lecturing?
+
+  **Knowledge source alignment (25% of dialog score, when source provided):**
+  - knowledge_source_alignment (1-5): Across the entire dialog, did the tutor's explanations align
+    with the knowledge base source? No hallucination, no contradiction. Faithful to the textbook.
+    **When "Not applicable"**: Omit this key.
 
   Output valid JSON only, no markdown or extra text:
   {
     "scores": {
-      "personalization_consistency": <1-5>,
-      "gap_coverage": <1-5>,
-      "misconception_resolution_trajectory": <1-5>,
+      "adaptation_consistency": <1-5>,
+      "gap_resolution": <1-5>,
       "success_criteria_met": <1-5>,
-      "learning_path_adaptation": <1-5>,
-      "efficiency": <1-5>,
-      "coherence": <1-5>,
-      "student_agency": <1-5>
+      "session_quality": <1-5>,
+      "student_agency": <1-5>,
+      "knowledge_source_alignment": <1-5>
     },
     "summary": "<3-5 sentences summarizing the tutoring session quality and key observations>"
   }
+  Include knowledge_source_alignment only when source content is provided.
 
 user_template: |
   ## Student Profile
@@ -61,8 +61,11 @@ user_template: |
   ## Task
   {task_summary}
 
+  ## Source Content (knowledge base — tutor should align with this)
+  {source_content_summary}
+
   ## Full conversation transcript
   {transcript}
 
   ## Your task
-  Score the ENTIRE dialog on all 8 dimensions (1-5). Be strict: only award 4 or 5 when there is clear, specific evidence of strong personalization. Output JSON only.
+  Score the ENTIRE dialog on all dimensions (1-5). Include knowledge_source_alignment when source content is provided. Be strict: only award 4 or 5 when there is clear, specific evidence. Output JSON only.
