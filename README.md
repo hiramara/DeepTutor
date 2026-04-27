@@ -72,7 +72,9 @@ Copy `.env.example` to `.env` and configure the following:
 | `ANTHROPIC_API_KEY` | Anthropic API key | Yes (if using Claude) |
 | `LLM_PROVIDER` | LLM backend (`openai`, `anthropic`, `ollama`) | Yes |
 | `EMBEDDING_MODEL` | Embedding model name | Yes |
-| `MAX_UPLOAD_SIZE_MB` | Maximum file upload size in MB | No (default: 50) |
+| `MAX_UPLOAD_SIZE_MB` | Maximum file upload size in MB | No (default: 100) |
+
+> **Personal note:** I bumped `MAX_UPLOAD_SIZE_MB` default to 100 since I frequently work with longer academic papers and textbooks that exceed the original 50 MB limit.
 
 For Chinese deployment, see `.env.example_CN`.
 
@@ -104,9 +106,4 @@ We welcome contributions! Please check our [issue templates](.github/ISSUE_TEMPL
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
-
-## Acknowledgements
-
-- Original project: [HKUDS/DeepTutor](https://github.com/HKUDS/DeepTutor)
-- Built with [LightRAG](https://github.com/HKUDS/LightRAG), [Gradio](https://gradio.app/), and [LangChain](https://langchain.com/)
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for det
