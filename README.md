@@ -102,8 +102,8 @@ We welcome contributions! Please check our [issue templates](.github/ISSUE_TEMPL
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feat/amazing-feature`)
 3. Commit your changes following [Conventional Commits](https://www.conventionalcommits.org/)
-4. Open a Pull Request
+4. Push to your branch and open a Pull Request
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for det
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
